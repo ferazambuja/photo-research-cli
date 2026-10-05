@@ -91,6 +91,7 @@ The tests include:
   opening options are checked for both POSIX and Windows.
 
 Software check on macOS, version 0.2.1: **159 tests passed; Ruff passed**.
+Windows with Python 3.11: **155 tests passed; POSIX replay skipped; Ruff passed**.
 
 ```sh
 uv run --locked pytest -q

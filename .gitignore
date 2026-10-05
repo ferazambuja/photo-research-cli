@@ -9,3 +9,4 @@ dist/
 *.jsonl
 *.csv
 *.recovery-*.json
+support-*.log

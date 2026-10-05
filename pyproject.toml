@@ -1,6 +1,6 @@
 [project]
 name = "photo-research-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Guided serial spectrum logging for Photo Research PR-655 and PR-670"
 readme = "README.md"
 requires-python = ">=3.11"

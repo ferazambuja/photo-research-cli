@@ -101,6 +101,36 @@ class FakePort:
             response = b"REMOTE MODE\r\n"
         elif command == "D111":
             response = f"00000,{self.model}\r\n".encode("ascii")
+        elif command == "I":
+            response = b"00000\r\n"
+        elif command == "D110":
+            response = b"00000,67065106\r\n"
+        elif command == "D114":
+            response = b"00000,2.22D\r\n"
+        elif command == "D112":
+            response = b"00000,1,4\r\n" if self.model == "PR-670" else b"00000,1,1\r\n"
+        elif command == "D116":
+            response = b"00000,0,MS-75,Primary,Luminance,Radiance\r\n"
+        elif command == "D117":
+            response = b"00000,0,1 deg,0.00\r\n"
+            if self.model == "PR-670":
+                response += (b"00000,1,1/2 deg,0.00\r\n00000,2,1/4 deg,0.00\r\n"
+                             b"00000,3,1/8 deg,0.00\r\n")
+        elif command == "D120":
+            response = (b"00000,201,0.00,380,780,2,256,7,247\r\n" if self.model == "PR-670"
+                        else b"00000,101,0.00,380,780,4,128,0,127\r\n")
+        elif command == "D601":
+            response = b"00000,0,-1,-1,-1,0,0,0,0,0,1,2,0,0,0,60.00\r\n"
+        elif command == "D602":
+            response = (b"00000,MS-75,None,None,None,1 deg,English,Adaptive,0 msec,Normal,"
+                        b"1 cycles,2 deg,No Smart Dark,No Sync,Standard Sensitivity,"
+                        b"60.00 Hertz\r\n")
+        elif command == "D13":
+            response = b"00000,Fast,16500 msec\r\n"
+        elif command == "D14":
+            response = b"00000,User Sync,120.00 Hertz\r\n"
+        elif command in ("SN1", "SO2", "SS0", "SU0", "SD0", "SF0", "SG0", "SH0"):
+            response = b"00000\r\n"
         elif command in ("B00", "B100"):
             response = f"Backlight set to {int(command[1:])}%\r\n".encode("ascii")
         elif command == "M5":

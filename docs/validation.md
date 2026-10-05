@@ -70,7 +70,7 @@ The tests include:
   Each run takes two readings using separate serial connections, then verifies
   both saved files. The subprocess can open only the test's virtual terminal.
 
-Final check on macOS: **111 tests passed; Ruff passed**.
+Review completion check on macOS, 2026-10-03: **111 tests passed; Ruff passed**.
 
 ```sh
 uv run --locked pytest -q
@@ -81,3 +81,16 @@ The local serial replay is skipped on Windows, where POSIX pseudo-terminals
 are unavailable. It verifies host communication and saving with a simulator.
 Actual firmware replies, USB drivers, instrument timing and optical accuracy
 still need a physical PR-655/PR-670 test.
+
+## Support logs and command checks, 2026-10-04
+
+Version 0.2.0 adds automatic support logs and a `check` command. The documented
+queries and optional tests of current setup values, including the PR-670-only
+SD/SF/SG/SH commands, are listed in [command coverage](commands.md).
+
+The pySerial replay now covers both recording and device checks for each model,
+including the optional setup command tests and fragmented aperture lists.
+Additional tests cover connection failure, command rejection, partial replies,
+incorrect reported grids, unexpected settings changes, interruption and
+support-log write failure while saving a complete reading. Final software check
+on macOS: **136 tests passed; Ruff passed**. No physical meter was used.

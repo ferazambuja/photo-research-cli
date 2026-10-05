@@ -21,7 +21,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "pr_meter.py"
 
 
 @pytest.mark.parametrize("model,step", [("PR-655", 4), ("PR-670", 2)])
-def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, model, step):
+@pytest.mark.parametrize("mode", ["record", "check"])
+def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, model, step, mode):
     master, slave = pty.openpty()
     port_name = os.ttyname(slave)
     guard = tmp_path / "guard"
@@ -49,6 +50,29 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
     commands = []
     errors = []
     stopping = threading.Event()
+    # Diagnostic examples from Rev. B, printed pages 117–121. The PR-655
+    # configuration and aperture count are constructed variants for that model.
+    reports = {
+        "I": "00000",
+        "D110": "00000,67065106",
+        "D114": "00000,2.22D",
+        "D112": "00000,1,4" if model == "PR-670" else "00000,1,1",
+        "D116": "00000,0,MS-75,Primary,Luminance,Radiance",
+        "D117": "00000,0,1 deg,0.00",
+        "D120": ("00000,201,0.00,380,780,2,256,7,247" if model == "PR-670"
+                 else "00000,101,0.00,380,780,4,128,0,127"),
+        "D601": "00000,0,-1,-1,-1,0,0,0,0,0,1,2,0,0,0,60.00",
+        "D602": ("00000,MS-75,None,None,None,1 deg,English,Adaptive,0 msec,Normal,"
+                 "1 cycles,2 deg,No Smart Dark,No Sync,Standard Sensitivity,60.00 Hertz"),
+        "D13": "00000,Fast,16500 msec",
+        "D14": "00000,User Sync,120.00 Hertz",
+    }
+    if model == "PR-670":
+        reports["D117"] += ("\r\n00000,1,1/2 deg,0.00\r\n00000,2,1/4 deg,0.00"
+                            "\r\n00000,3,1/8 deg,0.00")
+    setup_commands = ["SN1", "SO2", "SS0", "SU0"]
+    if model == "PR-670":
+        setup_commands += ["SD0", "SF0", "SG0", "SH0"]
 
     def send(data):
         while data:
@@ -85,6 +109,16 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
                             send(f"00000,{model}\r\n".encode("ascii"))
                         elif text in ("B00", "B100"):
                             send(f"Backlight set to {int(text[1:])} %\r\n".encode("ascii"))
+                        elif text in reports:
+                            response = (reports[text] + "\r\n").encode("ascii")
+                            if text == "D117":
+                                for line in response.splitlines(keepends=True):
+                                    send(line)
+                                    time.sleep(0.12)
+                            else:
+                                send(response)
+                        elif text in setup_commands:
+                            send(b"00000\r\n")
                         elif text == "M5":
                             response = spectrum.encode("ascii")
                             for chunk in (response[:17], response[17:113], response[113:]):
@@ -98,16 +132,17 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
 
     server = threading.Thread(target=replay, daemon=True)
     server.start()
+    arguments = (["record", "--port", port_name, "--timeout", "2", "--name", "serial-replay"]
+                 if mode == "record" else ["check", "--port", port_name, "--timeout", "2"])
     try:
         result = subprocess.run(
-            [sys.executable, str(SCRIPT), "record", "--port", port_name,
-             "--timeout", "2", "--name", "serial-replay"],
+            [sys.executable, str(SCRIPT), *arguments],
             cwd=tmp_path,
             env=environment,
-            input="measure\nReference\nTrial\n\n\n\n\nquit\n",
+            input="measure\nReference\nTrial\n\n\n\n\nquit\n" if mode == "record" else "y\n",
             text=True,
             capture_output=True,
-            timeout=15,
+            timeout=20,
         )
     finally:
         stopping.set()
@@ -117,6 +152,20 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
     assert not server.is_alive()
     assert not errors, errors
     assert result.returncode == 0, result.stderr
+    log_path, = tmp_path.glob("support-*.log")
+    text = log_path.read_text(encoding="utf-8")
+    assert "RX" in text and "TX complete" in text and model in text
+    assert "Command finished with exit status 0" in text
+    assert str(log_path) in result.stderr
+    if mode == "check":
+        expected = ["Q", "PHOTO", "D111", "I", "D110", "D114", "D112", "D116", "D117",
+                    "D120", "D601", "D602", "D13", "D14", "D601"]
+        for command in setup_commands:
+            expected += [command, "D601"]
+        assert commands == expected + ["Q"]
+        assert "67065106" in text and "2.22D" in text
+        assert not list(tmp_path.glob("*.jsonl")) and not list(tmp_path.glob("*.csv"))
+        return
     assert commands == ["Q", "PHOTO", "D111", "B00", "M5", "B100", "Q"] * 2
     records = [
         json.loads(line) for line in (tmp_path / "serial-replay.jsonl").read_text().splitlines()

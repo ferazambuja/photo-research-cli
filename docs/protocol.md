@@ -4,6 +4,21 @@
 or file operations. `cli.py` owns operator interaction; `logging.py` owns the
 two outputs and offline CSV export.
 
+`diagnostics.py` attaches a standard-library file logging handler for each CLI
+run. It creates `support-<local timestamp>.log` with exclusive creation, using a
+temporary folder if the working folder is unwritable. Events include UTC time
+and elapsed monotonic seconds. Every event is flushed. The driver logs requested
+commands, individual write attempts, completion, received bytes and parsed lines.
+Failed writes are recorded as failures rather than assumed transmissions.
+Exceptions include their tracebacks, including connection and cleanup failures.
+The CLI logs prompts, entered text, save messages and exit status. A diagnostic
+write failure warns once and disables that handler; acquisition and measurement
+persistence continue through their existing paths.
+
+The separate `check` command reads documented device reports and optionally
+tests setup commands using their current values. It never acquires a spectrum
+or creates measurement files. See [command coverage](commands.md).
+
 The CLI creates a matching CSV/JSONL pair automatically in the current folder.
 Default filenames contain the session's local date and time. An optional
 `--name name` produces `name.jsonl` and `name.csv`. Extensions are added by the

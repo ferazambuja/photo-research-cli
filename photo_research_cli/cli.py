@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,17 +14,24 @@ from serial.tools import list_ports
 
 from . import __version__
 from .demo import make_demo_record
-from .driver import PRError, PRMeter, validate_connection
+from .diagnostics import SupportLog
+from .driver import InstrumentError, PRError, PRMeter, validate_connection
 from .logging import CsvSaveError, ReadingLog, export_csv, make_record, save_recovery
+
+_LOG = logging.getLogger(__name__)
 
 
 def _say(message: str):
+    _LOG.info("%s", message)
     print(message, file=sys.stderr, flush=True)
 
 
 def _ask(prompt: str) -> str:
+    _LOG.info("Prompt: %s", prompt)
     print(prompt, end="", file=sys.stderr, flush=True)
-    return input().strip()
+    answer = input().strip()
+    _LOG.info("Answer: %r", answer)
+    return answer
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -40,6 +48,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Find the meter's serial port",
         description="List serial ports. Unplug and reconnect the meter "
         "to see which port reappears.",
+    )
+    check = commands.add_parser(
+        "check",
+        help="Check the connection and device commands; save a support log",
+        description="Read device information, accessories, apertures and current settings. "
+        "You can also test setup commands using the current values. No reading is taken.",
+    )
+    check.add_argument("--port", required=True, help="Meter port, e.g. COM3")
+    check.add_argument(
+        "--timeout", type=float, default=10, metavar="SECONDS",
+        help="Maximum wait for a report (default: 10 seconds; short reports allow up to 5)",
     )
     record = commands.add_parser(
         "record",
@@ -94,11 +113,83 @@ def _ports() -> int:
         return 0
     _say("Available serial ports:")
     for port in ports:
+        _log_port(port)
         _say(f"  {port.device}  {port.description}")
     _say("To find the meter's port, unplug it, run this command again, then reconnect it.")
     _say("Use the port that reappears:")
     _say("uv run python pr_meter.py record --port YOUR_PORT")
     return 0
+
+
+def _log_port(port):
+    _LOG.info("OS port metadata: %r", {
+        key: getattr(port, key, None)
+        for key in ("device", "description", "hwid", "vid", "pid", "serial_number",
+                    "manufacturer", "product", "interface", "location")
+    })
+
+
+def _check(args: argparse.Namespace) -> int:
+    validate_connection(args.port, args.timeout)
+    _say(f"Photo Research spectrum logger {__version__}")
+    _say("by Fernando Voltolini de Azambuja")
+    _say(f"Checking the meter on {args.port}...")
+    _say("This reads device information. It does not take a measurement.")
+    failed = False
+
+    def report(command, label, rows=1):
+        nonlocal failed
+        try:
+            result = meter.query(command, rows)
+        except InstrumentError as error:
+            failed = True
+            _say(f"{label}: unavailable ({error})")
+            return None
+        _say(f"{label}: " + "; ".join(", ".join(fields[1:]) or "OK" for fields in result))
+        return result
+
+    with PRMeter(args.port, args.timeout) as meter:
+        _say(f"Device model: {meter.model}")
+        report("I", "Instrument status")
+        report("D110", "Serial number")
+        report("D114", "Device software version")
+        counts = report("D112", "Accessory and aperture counts")
+        if counts is not None:
+            for command, label, value in (
+                ("D116", "Accessories", counts[0][1]),
+                ("D117", "Apertures", counts[0][2]),
+            ):
+                count = int(float(value))
+                if count:
+                    report(command, label, count)
+                else:
+                    _say(f"{label}: none reported")
+        report("D120", "Hardware configuration")
+        setup = report("D601", "Current setup codes")
+        report("D602", "Current setup descriptions")
+        report("D13", "Exposure from the last reading")
+        report("D14", "Synchronization report")
+        if setup is not None:
+            _say("Setup tests resend the current values and check the settings after each command.")
+            if meter.model == "PR-670":
+                _say("This includes PR-670 smart dark, aperture, speed and sensitivity commands.")
+            try:
+                choice = _ask("Also test setup commands using the current values? [y/N]: ")
+            except EOFError:
+                choice = ""
+            if choice.lower() in ("y", "yes"):
+                for label in meter.test_current_settings():
+                    _say(f"Checked {label}: command accepted; settings unchanged.")
+            else:
+                _say("Setup command tests skipped.")
+    for warning in meter.warnings:
+        _say(f"Warning: {warning}")
+        failed = True
+    if meter.interrupted:
+        return 130
+    _say("Connection check finished." + (" Some checks did not pass." if failed else ""))
+    _say("Use the record command for a guided spectrum reading.")
+    return 1 if failed else 0
 
 
 def _help(demo: bool = False):
@@ -207,6 +298,7 @@ def _session(args: argparse.Namespace) -> int:
                             reading = meter.measure()
                         record = make_record(reading, saved + 1, name, notes, meter.warnings)
                 except (PRError, serial.SerialException, OSError) as error:
+                    _LOG.exception("Reading failed")
                     failed = True
                     _say(f"Reading failed: {error}")
                     _say("Earlier readings stay saved.")
@@ -224,8 +316,10 @@ def _session(args: argparse.Namespace) -> int:
                 try:
                     log.append(record)
                 except CsvSaveError as error:
+                    _LOG.exception("CSV save failed after JSONL was saved")
                     csv_failure = error
                 except (OSError, KeyboardInterrupt) as error:
+                    _LOG.exception("Measurement save failed")
                     _recover(record, log.path, error)
                     return 130 if isinstance(error, KeyboardInterrupt) else 2
                 saved += 1
@@ -259,6 +353,7 @@ def _session(args: argparse.Namespace) -> int:
         except EOFError:
             _say("\nInput ended.")
         except KeyboardInterrupt:
+            _LOG.exception("Session interrupted")
             _say("\nSession interrupted.")
             if not args.demo:
                 _say("Wait for the meter to finish before starting again.")
@@ -268,15 +363,12 @@ def _session(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
-    if args.command is None:
-        parser.print_help()
-        return 0
+def _run(args: argparse.Namespace) -> int:
     try:
         if args.command == "ports":
             return _ports()
+        if args.command == "check":
+            return _check(args)
         if args.command == "export-csv":
             output = args.input.expanduser().resolve().parent / _file_path(
                 args.name, ".csv", f"{args.input.stem}-recovered"
@@ -286,15 +378,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return _session(args)
     except FileExistsError as error:
+        _LOG.exception("Output file already exists")
         _say(f"{error.filename or 'The output file'} already exists.")
         if args.command == "record":
             _say("Use a different --name, or leave it out for automatic filenames.")
         else:
             _say("Use a different --name for the CSV, or leave it out for automatic naming.")
         return 1
-    except (ValueError, OSError, serial.SerialException) as error:
-        _say(f"Cannot start: {error}")
-        if getattr(args, "demo", False):
+    except (PRError, ValueError, OSError, serial.SerialException) as error:
+        _LOG.exception("Command failed")
+        label = "Connection check stopped" if args.command == "check" else "Cannot start"
+        _say(f"{label}: {error}")
+        if args.command == "check":
+            _say("Check the power, cable and port. Close other programs using the meter.")
+        elif getattr(args, "demo", False):
             _say("Check the output folder, then run 'uv run python pr_meter.py record --help'.")
         else:
             _say(
@@ -303,7 +400,42 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 1
     except KeyboardInterrupt:
+        _LOG.exception("Command interrupted")
         _say("Interrupted.")
         if not getattr(args, "demo", False):
             _say("Wait for the meter to finish before starting again.")
         return 130
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return 0
+    try:
+        support = SupportLog()
+    except OSError as error:
+        _say(f"Cannot create a support log: {error}. Check the output folder and free disk space.")
+        return 1
+    with support:
+        _LOG.info("Command options: %r", vars(args))
+        _say(f"Support log: {support.path}")
+        if getattr(args, "port", None):
+            try:
+                for port in list_ports.comports():
+                    if port.device == args.port:
+                        _log_port(port)
+            except Exception:
+                _LOG.exception("OS port metadata could not be read")
+        try:
+            result = _run(args)
+        except Exception as error:
+            _LOG.exception("Unexpected failure")
+            _say(f"Unexpected error: {error}")
+            result = 2
+        _LOG.info("Command finished with exit status %d", result)
+        if support.handler.failed:
+            _say(f"Support log is incomplete: {support.path}")
+        _say(f"Send this support log to Fernando, whether the test works or fails: {support.path}")
+        return result

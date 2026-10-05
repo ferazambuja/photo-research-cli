@@ -58,6 +58,26 @@ On Windows, the port might be `COM3`. On macOS, it might be
 `/dev/cu.usbmodem101`. If several ports appear, unplug the meter and run the
 command again. Reconnect it; the port that reappears is the one to use.
 
+## Check the connection first
+
+With the meter connected, replace `COM3` with its port:
+
+```sh
+uv run python pr_meter.py check --port COM3
+```
+
+The check reads the model, serial number, device software version, hardware,
+accessories, apertures and current settings. It also requests the last exposure
+and synchronization reports. It does not take a measurement.
+
+When asked about setup command tests, answer `y` to test commands using the
+current values, or press Enter to skip. On the PR-670, this includes smart dark,
+aperture, speed and sensitivity. After each command, the script reads the
+settings again to check that they stayed the same.
+
+Send Fernando the **support log** printed on screen, whether the check works
+or fails. Then use `record` below to test a spectrum reading.
+
 ## Take readings
 
 Start the session, replacing `COM3` with your meter's port:
@@ -99,6 +119,23 @@ uv run python pr_meter.py record --port COM3 --name my-readings
 This creates **my-readings.jsonl** and **my-readings.csv**. Just give the name;
 the script adds both extensions. If the name is already in use, choose another
 or leave out `--name` to use the date and time.
+
+## Send a support log
+
+The script automatically creates a dated `support-...log` file for each run,
+including demo sessions. It prints the location at the start and end. Send
+this file to Fernando after a successful test or if something goes wrong.
+
+The log includes the script and Python versions, operating system, port details,
+commands, original device replies, timing, prompts and errors. It also contains
+sample names, notes and any reported device serial number. CSV and JSONL remain
+your measurement files.
+
+If the current folder cannot hold the log, it is saved in a temporary folder
+and that location is printed instead. Logs are saved locally; the script does
+not upload them.
+
+See [commands checked](docs/commands.md) for the query and setup test coverage.
 
 ## If something goes wrong
 

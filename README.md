@@ -16,7 +16,8 @@ It prints their locations. You don't need to name either file.
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
    reopen your terminal. uv manages Python and the script's dependencies.
-2. Download this project and extract the folder. Open a terminal in that folder.
+2. On this GitHub page, click **Code**, then **Download ZIP**. Extract the folder
+   and open a terminal in it.
 3. Run:
 
 ```sh
@@ -57,13 +58,16 @@ When asked about setup command tests, answer `y` to test commands using the
 current values, or press Enter to skip. On the PR-670, this includes smart dark,
 aperture, speed and sensitivity. After each command, the script reads the
 settings again to check that they stayed the same.
+The aperture command may move the mechanism even when its value stays the same.
+Skip setup tests if you only want to read the device information.
 
 Send Fernando the **support log** printed on screen, whether the check works
 or fails. Then use `record` below to test a spectrum reading.
 
 ## Take readings
 
-Start the session, replacing `COM3` with your meter's port:
+Run `check` above before your first reading. Then start the session, replacing
+`COM3` with your meter's port:
 
 ```sh
 uv run python pr_meter.py record --port COM3
@@ -80,7 +84,7 @@ Notes [optional; Enter to skip]: First position
 Aim and focus on 'White reference'. Keep the sample and illumination steady.
 Press Enter to measure, or type cancel:
 Measuring 'White reference'...
-Saved reading 1: 'White reference' (PR-670, 201 spectral samples, 380–780 nm).
+Saved reading 1: 'White reference' (PR-670, 201 spectral samples, 380-780 nm).
 Reposition the next sample, then enter its name, or type 'quit' to finish.
 Sample name [Enter for Sample 002; help / quit]:
 ```
@@ -112,7 +116,8 @@ a successful test or if something goes wrong.
 The log includes the script and Python versions, operating system, port details,
 commands, original device replies, timing, prompts and errors. It also contains
 sample names, notes and any reported device serial number. CSV and JSONL remain
-your measurement files.
+your measurement files. The log includes the full working-folder path, which
+may contain your computer account name, and USB serial numbers reported by the OS.
 
 If the current folder cannot hold the log, it is saved in a temporary folder
 and that location is printed instead. Logs are saved locally; the script does
@@ -126,6 +131,14 @@ See [commands checked](docs/commands.md) for the query and setup test coverage.
   driver from the [manufacturer's download page](https://novanta.com/precision-medicine/product/photo-research-pr-655/#tab-documents-downloads-2).
 - **A reading fails:** check the displayed error and meter settings. Wait for
   the meter to finish, then type `measure` to try again. Earlier readings stay saved.
+- **The connection still fails:** close the session, turn the meter off and on,
+  wait for startup, then run `ports` and `check` again. This also helps after an
+  interrupted command.
+- **A reading times out:** the default wait is 300 seconds. Long exposures or
+  many averaging cycles may need more time. For example, allow one hour with
+  `uv run python pr_meter.py record --port COM3 --timeout 3600`.
+- **A backlight warning appears:** the spectrum is saved with the warning in
+  JSONL. Check the display manually; its brightness was not confirmed.
 - **You press Ctrl-C:** the session ends. Wait for the meter to finish before
   starting another session.
 - **A file cannot be saved:** follow the message on screen. The script keeps

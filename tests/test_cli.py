@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import serial
 from conftest import FakePort
 
 from photo_research_cli import cli, logging
@@ -66,18 +67,18 @@ def test_guided_session_saves_both_files_after_each_reading(
     def input_with_save_check():
         value = next(values)
         if value == "help" and path.stat().st_size:
-            assert len(path.read_text().splitlines()) == 1
-            with path.with_suffix(".csv").open(newline="") as file:
+            assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+            with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
                 assert len(list(csv.DictReader(file))) == 201
         if value == "quit":
-            assert len(path.read_text().splitlines()) == 2
-            with path.with_suffix(".csv").open(newline="") as file:
+            assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+            with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
                 assert len(list(csv.DictReader(file))) == 302
         return value
 
     monkeypatch.setattr("builtins.input", input_with_save_check)
     assert cli.main(record_args(path)) == 0
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert [r["sample_name"] for r in records] == ['White, "reference"', "Sample 002"]
     assert records[0]["notes"] == "Répétition"
     assert records[0]["model"] == "PR-670"
@@ -105,7 +106,7 @@ def test_cancel_and_quit_do_not_open_meter(tmp_path, monkeypatch, scripted_sessi
     path = tmp_path / "empty.jsonl"
     assert cli.main(record_args(path)) == 0
     assert path.read_bytes() == b""
-    assert len(path.with_suffix(".csv").read_text().splitlines()) == 1
+    assert len(path.with_suffix(".csv").read_text(encoding="utf-8").splitlines()) == 1
     assert connections == []
 
 
@@ -125,13 +126,13 @@ def test_unsaved_next_reading_returns_to_commands_and_keeps_sequence(
     )
     path = tmp_path / "readings.jsonl"
     assert cli.main(record_args(path)) == (1 if outcome == "failure" else 0)
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert [(r["sequence"], r["sample_name"]) for r in records] == [
         (1, "First"), (2, "Sample 002")
     ]
     assert len(connections) == (3 if outcome == "failure" else 2)
     assert all(port.closed for port in connections)
-    with path.with_suffix(".csv").open(newline="") as file:
+    with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
         assert len(list(csv.DictReader(file))) == 202
     assert capsys.readouterr().err.count("Command [measure / help / quit]:") == 2
 
@@ -142,7 +143,7 @@ def test_existing_output_refused_before_hardware(tmp_path, suffix, capsys):
     existing = path.with_suffix(suffix)
     existing.write_text("keep")
     assert cli.main(record_args(path)) == 1
-    assert existing.read_text() == "keep"
+    assert existing.read_text(encoding="utf-8") == "keep"
     text = capsys.readouterr().err
     assert str(existing) in text and "automatic filenames" in text
 
@@ -163,13 +164,43 @@ def test_failed_acquisition_requires_another_operator_command(
     path = tmp_path / "readings.jsonl"
     assert cli.main(record_args(path)) == 1
     assert len(connections) == 2
-    assert len(path.read_text().splitlines()) == 1
-    record = json.loads(path.read_text())
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+    record = json.loads(path.read_text(encoding="utf-8"))
     assert record["sample_name"] == "Sample 001"
     assert record["sequence"] == 1
     text = capsys.readouterr().err
     assert "Insufficient signal" in text
     assert "Earlier readings stay saved" in text
+
+
+def test_failed_port_open_gives_connection_guidance_without_waiting_for_exposure(
+    tmp_path, monkeypatch, capsys
+):
+    def refused(*args):
+        raise serial.SerialException("Port could not be opened")
+
+    monkeypatch.setattr(cli, "PRMeter", refused)
+    answers(monkeypatch, ["measure", "", "", "", "quit"])
+    assert cli.main(record_args(tmp_path / "readings.jsonl")) == 1
+    text = capsys.readouterr().err
+    assert "Fix the connection" in text
+    assert "Wait for the meter to finish before typing" not in text
+
+
+def test_unconfirmed_backlight_warning_is_saved_with_complete_reading(
+    tmp_path, monkeypatch, scripted_session, capsys
+):
+    _, scripts = scripted_session
+    port = FakePort()
+    port.overrides["B00"] = b"Display off\r\n"
+    scripts.append(port)
+    answers(monkeypatch, ["measure", "", "", "", "quit"])
+    path = tmp_path / "readings.jsonl"
+    assert cli.main(record_args(path)) == 0
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert "Backlight-off command was not confirmed" in record["warnings"][0]
+    assert len(record["spectral_values"]) == 101
+    assert "check the meter display" in capsys.readouterr().err
 
 
 def test_jsonl_save_failure_recovers_without_another_measurement(
@@ -193,7 +224,7 @@ def test_jsonl_save_failure_recovers_without_another_measurement(
     recovery = json.loads(capture.out)
     recovery_files = list(tmp_path.glob("*.recovery-*.json"))
     assert len(recovery_files) == 1
-    assert json.loads(recovery_files[0].read_text()) == recovery
+    assert json.loads(recovery_files[0].read_text(encoding="utf-8")) == recovery
     assert recovery["spectral_values"][0] == -0.125
 
 
@@ -213,7 +244,7 @@ def test_csv_save_failure_preserves_jsonl_and_reports_rebuild_command(
     path = tmp_path / "readings.jsonl"
     assert cli.main(record_args(path)) == 2
     assert len(connections) == 1
-    assert len(path.read_text().splitlines()) == 1
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
     capture = capsys.readouterr()
     assert capture.out == ""
     assert "reading is saved in JSONL" in capture.err
@@ -238,7 +269,7 @@ def test_interruption_preserves_only_complete_readings(
     assert cli.main(record_args(path)) == 130
     assert port.closed
     count = 0 if stage == "exposure" else 1
-    assert len(path.read_text().splitlines()) == count
+    assert len(path.read_text(encoding="utf-8").splitlines()) == count
     capture = capsys.readouterr()
     assert "interrupted" in capture.err.lower()
 
@@ -251,7 +282,7 @@ def test_cleanup_warning_is_saved_with_complete_reading(tmp_path, monkeypatch, s
     answers(monkeypatch, ["measure", "", "", "", "quit"])
     path = tmp_path / "readings.jsonl"
     assert cli.main(record_args(path)) == 0
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     assert record["warnings"] and "backlight" in record["warnings"][0]
     assert len(record["spectral_values"]) == 101
 
@@ -278,7 +309,7 @@ def test_recovery_is_saved_even_with_a_broken_stdout(tmp_path, reading, monkeypa
     cli._recover(record, tmp_path / "readings.jsonl", OSError("Disk full"))
     files = list(tmp_path.glob("*.recovery-*.json"))
     assert len(files) == 1
-    assert json.loads(files[0].read_text())["notes"] == "Unicode: 色"
+    assert json.loads(files[0].read_text(encoding="utf-8"))["notes"] == "Unicode: 色"
     assert "Output pipe closed" in capsys.readouterr().err
 
 
@@ -304,8 +335,8 @@ def test_interrupted_second_measurement_keeps_first_save(tmp_path, monkeypatch, 
     answers(monkeypatch, ["measure", "", "", "", "", "", ""])
     path = tmp_path / "readings.jsonl"
     assert cli.main(record_args(path)) == 130
-    assert len(path.read_text().splitlines()) == 1
-    with path.with_suffix(".csv").open(newline="") as file:
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+    with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
         assert len(list(csv.DictReader(file))) == 101
     assert len(connections) == 2 and all(port.closed for port in connections)
 
@@ -323,10 +354,10 @@ def test_default_output_creates_a_fresh_csv_and_jsonl_pair_for_each_session(
     assert len(logs) == len(tables) == 2
     assert {path.stem for path in logs} == {path.stem for path in tables}
     for path in logs:
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding="utf-8"))
         assert record["sample_name"] == "White" and record["sequence"] == 1
         assert len(record["spectral_values"]) == 101
-        with path.with_suffix(".csv").open(newline="") as file:
+        with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
             assert len(list(csv.DictReader(file))) == 101
     assert len(connections) == 2 and all(port.closed for port in connections)
 
@@ -347,13 +378,13 @@ def test_demo_saves_labeled_data_after_each_command_without_hardware(
         value = next(values)
         if value == "help":
             path, = tmp_path.glob("*.jsonl")
-            assert len(path.read_text().splitlines()) == 1
-            with path.with_suffix(".csv").open(newline="") as file:
+            assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+            with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
                 assert len(list(csv.DictReader(file))) == 201
         if value == "quit":
             path, = tmp_path.glob("*.jsonl")
-            assert len(path.read_text().splitlines()) == 2
-            with path.with_suffix(".csv").open(newline="") as file:
+            assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+            with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
                 assert len(list(csv.DictReader(file))) == 402
         return value
 
@@ -365,7 +396,7 @@ def test_demo_saves_labeled_data_after_each_command_without_hardware(
     assert connections == []
     path, = tmp_path.glob("*.jsonl")
     assert path.stem == "my-demo" if custom_name else path.stem.startswith("demo-")
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert [record["sequence"] for record in records] == [1, 2]
     assert [record["sample_name"] for record in records] == ["Demo white", "Sample 002"]
     assert records[0]["notes"] == "Trial"
@@ -383,7 +414,7 @@ def test_demo_saves_labeled_data_after_each_command_without_hardware(
         assert record["warnings"] == ["Synthetic demo data; no meter was connected."]
         assert record["acquisition_settings"] == "demo; no meter settings"
         assert record["calibration_status"] == "not_applicable"
-    with path.with_suffix(".csv").open(newline="") as file:
+    with path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert all(row["port"] == "DEMO" for row in rows)
     assert all(row["spectral_units"] == "arbitrary demo units" for row in rows)
@@ -406,7 +437,7 @@ def test_demo_cancel_does_not_generate_or_save_a_reading(tmp_path, monkeypatch):
     answers(monkeypatch, ["measure", "", "", "cancel", "quit"])
     assert cli.main(["record", "--demo", "--name", "cancelled"]) == 0
     assert (tmp_path / "cancelled.jsonl").read_bytes() == b""
-    assert len((tmp_path / "cancelled.csv").read_text().splitlines()) == 1
+    assert len((tmp_path / "cancelled.csv").read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_demo_interrupt_keeps_saved_reading_without_meter_instructions(
@@ -422,8 +453,8 @@ def test_demo_interrupt_keeps_saved_reading_without_meter_instructions(
 
     monkeypatch.setattr("builtins.input", interrupted_input)
     assert cli.main(["record", "--demo", "--name", "interrupted"]) == 130
-    assert len((tmp_path / "interrupted.jsonl").read_text().splitlines()) == 1
-    with (tmp_path / "interrupted.csv").open(newline="") as file:
+    assert len((tmp_path / "interrupted.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    with (tmp_path / "interrupted.csv").open(encoding="utf-8", newline="") as file:
         assert len(list(csv.DictReader(file))) == 201
     text = capsys.readouterr().err
     assert "Session interrupted" in text

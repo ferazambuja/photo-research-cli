@@ -7,7 +7,7 @@ import serial
 from conftest import FakePort
 
 from photo_research_cli import cli, diagnostics
-from photo_research_cli.driver import PRError, PRMeter
+from photo_research_cli.driver import PRError, PRMeter, UnexpectedReport
 
 
 @pytest.fixture(autouse=True)
@@ -110,15 +110,14 @@ def test_counted_aperture_report_waits_for_all_fragmented_rows():
 
 
 @pytest.mark.parametrize("reply", [b"00000,1,-1\r\n", b"00000,1,1.5\r\n", b"00000,1,nan\r\n"])
-def test_invalid_list_counts_stop_before_a_following_query(reply):
+def test_complete_invalid_list_counts_allow_other_queries(reply):
     port = FakePort()
     port.overrides["D112"] = reply
     with PRMeter("TEST", transport=port, clock=port.clock) as meter:
-        with pytest.raises(PRError):
+        with pytest.raises(UnexpectedReport):
             meter.query("D112")
-        with pytest.raises(PRError, match="reconnect"):
-            meter.query("D114")
-    assert "D114" not in port.commands
+        assert meter.query("D114") == [["00000", "2.22D"]]
+    assert "D116" not in port.commands and "D117" not in port.commands
 
 
 def test_query_refuses_state_changing_commands_before_writing():
@@ -139,19 +138,113 @@ def test_invalid_snapshot_cannot_send_any_setup_command():
     assert not any(command.startswith("S") for command in port.commands)
 
 
-@pytest.mark.parametrize("command,reply,rows", [
-    ("D110", b"00000,\r\n", 1),
-    ("D120", b"00000,201,0,380,780,2,256,7,247\r\n", 1),
-    ("D117", b"00000,0,1 deg,0\r\n", 2),
+@pytest.mark.parametrize("command,reply", [
+    ("D110", b"00000,\r\n"),
+    ("D120", b"00000,201,0,380,780,2,256,7,247\r\n"),
 ])
-def test_missing_identity_wrong_grid_and_incomplete_list_stop_the_connection(command, reply, rows):
+def test_complete_unexpected_identity_or_grid_allows_other_diagnostics(command, reply):
     port = FakePort()
     port.overrides[command] = reply
+    with PRMeter("TEST", transport=port, clock=port.clock) as meter:
+        with pytest.raises(UnexpectedReport, match="Raw report"):
+            meter.query(command)
+        assert meter.query("I") == [["00000"]]
+
+
+@pytest.mark.parametrize("reply", [b"00000,0,1 deg,0\r\n", b"00000,0,bad,comma,0\r\n"])
+def test_incomplete_list_still_stops_the_connection_even_with_unexpected_fields(reply):
+    port = FakePort()
+    port.overrides["D117"] = reply
     with PRMeter("TEST", 0.2, transport=port, clock=port.clock) as meter:
-        with pytest.raises(PRError):
-            meter.query(command, rows)
+        with pytest.raises(PRError, match="Timed out"):
+            meter.query("D117", 2)
         with pytest.raises(PRError, match="reconnect"):
             meter.query("I")
+
+
+@pytest.mark.parametrize("command,reply", [
+    ("D601", b"00000,0,0\r\n"),
+    ("D116", b"00000,0,Lens, with comma,Primary,Luminance,Radiance\r\n"),
+    ("D112", b"00000,1,nan\r\n"),
+    ("D114", b"unknown firmware format\r\n"),
+])
+def test_check_keeps_complete_unexpected_reports_and_continues(
+    tmp_path, monkeypatch, scripted_session, capsys, command, reply
+):
+    _, scripts = scripted_session
+    port = FakePort()
+    port.overrides[command] = reply
+    scripts.append(port)
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    assert cli.main(["check", "--port", "COM3"]) == 1
+    assert "D602" in port.commands and "D13" in port.commands and "D14" in port.commands
+    assert not any(command.startswith("S") for command in port.commands)
+    if command == "D112":
+        assert "D116" not in port.commands and "D117" not in port.commands
+    assert reply.decode().strip() in support_text(tmp_path)
+    assert "continuing with the other checks" in capsys.readouterr().err
+    assert port.closed
+
+
+def test_unexpected_list_row_is_drained_before_next_query():
+    port = FakePort("PR-670")
+    original = port.respond
+
+    def fragmented(command):
+        if command == "D117":
+            port.commands.append(command)
+            for index in range(4):
+                name = "with,comma" if index == 0 else "aperture"
+                port.pending.append((port.clock.monotonic() + index * 0.12,
+                                     f"0,{index},{name},0\r\n".encode()))
+        else:
+            original(command)
+
+    port.respond = fragmented
+    with PRMeter("TEST", transport=port, clock=port.clock) as meter:
+        with pytest.raises(UnexpectedReport, match="with,comma"):
+            meter.query("D117", 4)
+        assert meter.query("D114") == [["00000", "2.22D"]]
+    assert port.pending == []
+
+
+def test_text_report_preserves_non_ascii_bytes_without_guessing_encoding(
+    tmp_path, monkeypatch, scripted_session, capsys
+):
+    _, scripts = scripted_session
+    port = FakePort()
+    port.overrides["D117"] = b"00000,0,1\xb0,0.00\r\n"
+    scripts.append(port)
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    assert cli.main(["check", "--port", "COM3"]) == 0
+    assert "1\\xb0" in capsys.readouterr().err
+    assert "\\xb0" in support_text(tmp_path)
+    assert "D14" in port.commands and port.closed
+
+
+def test_numeric_reports_still_refuse_non_ascii_values():
+    port = FakePort()
+    port.overrides["D112"] = b"00000,1,\xb2\r\n"
+    with PRMeter("TEST", transport=port, clock=port.clock) as meter:
+        with pytest.raises(UnexpectedReport, match="Invalid numeric"):
+            meter.query("D112")
+        assert meter.query("D114") == [["00000", "2.22D"]]
+
+
+def test_stored_instrument_error_is_reported_without_failing_or_clearing_check(
+    tmp_path, monkeypatch, scripted_session, capsys
+):
+    _, scripts = scripted_session
+    port = FakePort()
+    port.overrides["I"] = b"-8\r\n"
+    scripts.append(port)
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    assert cli.main(["check", "--port", "COM3"]) == 0
+    text = capsys.readouterr().err
+    assert "stored error -8 (reported, not cleared)" in text
+    assert "Instrument status: unavailable" not in text
+    assert "Stored instrument error" in support_text(tmp_path)
+    assert "C" not in port.commands and "D14" in port.commands
 
 
 def test_log_failure_cannot_prevent_spectrum_saving(
@@ -179,8 +272,8 @@ def test_log_failure_cannot_prevent_spectrum_saving(
     replies = iter(["measure", "", "", "", "quit"])
     monkeypatch.setattr("builtins.input", lambda: next(replies))
     assert cli.main(["record", "--port", "COM3", "--name", "saved"]) == 0
-    assert len((tmp_path / "saved.jsonl").read_text().splitlines()) == 1
-    assert len((tmp_path / "saved.csv").read_text().splitlines()) == 102
+    assert len((tmp_path / "saved.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert len((tmp_path / "saved.csv").read_text(encoding="utf-8").splitlines()) == 102
     assert "Support log is incomplete" in capsys.readouterr().err
 
 
@@ -226,7 +319,7 @@ def test_record_keeps_protocol_and_failure_details_without_changing_measurements
     text = support_text(tmp_path)
     assert "\\xff" in text and "non-ASCII" in text and "Traceback" in text
     assert "Saved reading 1" in text and "Serial port closed" in text
-    assert len((tmp_path / "readings.jsonl").read_text().splitlines()) == 1
+    assert len((tmp_path / "readings.jsonl").read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_log_falls_back_to_temporary_folder_when_working_folder_is_unwritable(

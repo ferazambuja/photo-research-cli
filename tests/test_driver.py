@@ -221,3 +221,95 @@ def test_invalid_timeout_does_not_open_hardware(timeout):
 def test_blank_port_does_not_open_hardware():
     with pytest.raises(ValueError, match="explicitly"):
         PRMeter(" ")
+
+
+@pytest.mark.parametrize("reply", [b"Backlight set to 00 %\r\n", b"Backlight set to 000%\r\n"])
+def test_zero_padded_backlight_acknowledgement_allows_measurement(reply):
+    port = FakePort()
+    port.overrides["B00"] = reply
+    with connect(port) as meter:
+        assert len(meter.measure().spectral_values) == 101
+        assert meter.warnings == []
+    assert "M5" in port.commands and port.closed
+
+
+@pytest.mark.parametrize("reply", [b"Display off\r\n", b"-1000\r\n", b"00000\r\n"])
+def test_complete_unconfirmed_backlight_reply_warns_and_preserves_reading(reply):
+    port = FakePort()
+    port.overrides["B00"] = reply
+    with connect(port) as meter:
+        reading = meter.measure()
+        assert len(reading.spectral_values) == 101
+        assert reading.raw_m5_response == frame().decode("ascii")
+        assert "Backlight-off command was not confirmed" in meter.warnings[0]
+    assert port.commands[-3:] == ["M5", "B100", "Q"]
+
+
+@pytest.mark.parametrize("reply", [b"", b"Display off", b"Display off\r\nextra"])
+def test_incomplete_backlight_exchange_cannot_start_measurement(reply):
+    port = FakePort()
+    port.overrides["B00"] = reply
+    with connect(port, timeout=0.2) as meter:
+        with pytest.raises(PRError):
+            meter.measure()
+        with pytest.raises(PRError, match="reconnect"):
+            meter.measure()
+    assert "M5" not in port.commands and port.closed
+
+
+@pytest.mark.parametrize("stage", ["in_waiting", "read"])
+def test_serial_disconnection_mid_spectrum_refuses_reading_and_closes_port(stage):
+    class DisconnectedPort(FakePort):
+        read_spectrum = False
+        disconnected = False
+
+        @property
+        def in_waiting(self):
+            if stage == "in_waiting" and self.read_spectrum and not self.disconnected:
+                self.disconnected = True
+                raise serial.SerialException("Disconnected during spectrum")
+            return super().in_waiting
+
+        def read(self, count):
+            if stage == "read" and self.read_spectrum and not self.disconnected:
+                self.disconnected = True
+                raise serial.SerialException("Disconnected during spectrum")
+            data = super().read(count)
+            if self.has_measured:
+                self.read_spectrum = True
+            return data
+
+    port = DisconnectedPort()
+    port.chunks = [frame()[:150], frame()[150:]]
+    port.delays = [0, 0.12]
+    with connect(port) as meter:
+        with pytest.raises(serial.SerialException, match="Disconnected"):
+            meter.measure()
+        with pytest.raises(PRError, match="reconnect"):
+            meter.measure()
+    assert port.closed and port.commands.count("M5") == 1
+
+
+@pytest.mark.parametrize("system", ["posix", "nt"])
+def test_serial_open_options_match_platform(monkeypatch, system):
+    from types import SimpleNamespace
+
+    from photo_research_cli import driver
+
+    port = FakePort()
+    options = {}
+
+    def open_serial(**kwargs):
+        options.update(kwargs)
+        return port
+
+    monkeypatch.setattr(driver, "os", SimpleNamespace(name=system))
+    monkeypatch.setattr(driver.serial, "Serial", open_serial)
+    with PRMeter("SOFTWARE_TEST", clock=port.clock):
+        pass
+    assert options["baudrate"] == 115200
+    assert options["xonxoff"] is options["rtscts"] is options["dsrdtr"] is False
+    if system == "posix":
+        assert options["exclusive"] is True
+    else:
+        assert "exclusive" not in options

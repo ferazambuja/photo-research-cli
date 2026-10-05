@@ -21,7 +21,7 @@ def test_two_readings_append_full_jsonl_and_corresponding_csv(tmp_path, reading)
         before = path.read_bytes()
         log.append(second)
         assert path.read_bytes().startswith(before)
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(records) == 2
     assert records[0] == json.loads(logging.encode_record(first))
     assert records[1] == json.loads(logging.encode_record(second))
@@ -91,7 +91,7 @@ def test_csv_failure_keeps_jsonl_reading_and_can_export_it(
         with pytest.raises(CsvSaveError) as caught:
             log.append(make_record(reading, 2, "Gray", "", []))
         assert caught.value.interrupted == interrupted
-        assert len(path.read_text().splitlines()) == 2
+        assert len(path.read_text(encoding="utf-8").splitlines()) == 2
         assert log.csv_path.read_bytes() == csv_before
         monkeypatch.setattr(logging, "_write_all", original)
     before = path.read_bytes()
@@ -104,7 +104,7 @@ def test_csv_failure_keeps_jsonl_reading_and_can_export_it(
 def test_recovery_file_is_complete_and_exclusive(tmp_path, reading):
     record = make_record(reading, 1, "White", "", [])
     path = logging.save_recovery(record, tmp_path / "readings.jsonl")
-    assert json.loads(path.read_text()) == json.loads(logging.encode_record(record))
+    assert json.loads(path.read_text(encoding="utf-8")) == json.loads(logging.encode_record(record))
     before = path.read_bytes()
     with pytest.raises(FileExistsError):
         logging.save_recovery(record, tmp_path / "readings.jsonl")

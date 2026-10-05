@@ -9,9 +9,9 @@ reported by the instrument.
 Sources: Photo Research *PR-655/PR-670 User Manual*, Rev. B, 2009-07-29,
 printed pages 102–111 and 114–121, and the
 [2019 manufacturer manual](https://github.com/ISET/isetcalibrate/blob/39ff27392f0bd60d7eb044aa5b15d751e6920ff2/PR-655-670-SpectraScan-User-Manual.pdf),
-printed pages 113–131. Rev. B includes the numeric D601 setup layout and the
-human-readable D602 example. The 2019 manual lists both reports but omits their
-expanded examples.
+printed pages 113–132. Both editions include the numeric D601 setup layout and
+the human-readable D602 example (Rev. B pages 120–121; 2019 page 132). Rev. B's
+title page explicitly gives its version date as 07/29/09.
 
 ## Connection and query checks
 
@@ -34,12 +34,19 @@ All commands except Q and PHOTO include CR. Existing 50 ms character pacing
 is retained. Reports use a shared deadline of up to five seconds per query and
 the existing 64 KiB response limit. Counted lists must contain every expected
 row, even across gaps; an empty serial buffer does not end a list. Zero-count
-lists are skipped. Single-line and list reports must match their documented
-field counts. D112 counts must be nonnegative integers. D120 must agree with the
+lists are skipped. Single-line and list reports are checked against documented
+field counts. D112 counts must be nonnegative integers. D120 is compared with the
 grid this logger supports. D601 values must be finite instrument decimals.
 
 A complete negative status is logged as an unavailable report, and later
-queries can continue. A timeout, malformed or incomplete report stops the check.
+queries can continue. For `I`, a negative code is a successfully reported stored
+error; it is displayed and logged without clearing it or failing the check.
+Complete reports with unfamiliar fields are shown and logged, then other
+queries continue. Unknown D112 counts skip the accessory/aperture lists; an
+unrecognized D601 skips setup tests. Text bytes outside ASCII are displayed as
+`\xNN` escapes and retained exactly in the raw-byte log. Numeric fields remain
+strict decimal/scientific ASCII.
+A timeout, incomplete list, extra data or failed write stops the check.
 It does not reconnect or retry automatically. Failed reports produce a nonzero
 exit status, even when model identification succeeded.
 
@@ -66,6 +73,9 @@ the log. An unexpected change is reported on screen so the operator can check
 the meter before measuring. There is no automatic attempt to rewrite the whole
 setup after an unexpected response.
 
+The PR-670 aperture command may move the mechanism even when its value remains
+unchanged. Press Enter to skip setup tests when only device information is needed.
+
 These tests establish command acceptance and report consistency at current
 values. They do not test switching between values, aperture motion, dark-current
 performance, sensitivity, exposure accuracy or other optical effects.
@@ -73,8 +83,11 @@ performance, sensitivity, exposure accuracy or other optical effects.
 ## Other commands
 
 `record` exercises B00, M5 and B100 for each operator-confirmed spectrum and
-retains measurement data in CSV/JSONL alongside the support log. It uses the
-meter's current settings.
+retains measurement data in CSV/JSONL alongside the support log. Zero-padded
+backlight acknowledgements are accepted. A complete rejected or unfamiliar B00
+reply adds a warning and allows M5; a timeout, extra data or failed write does
+not. B100 restoration is best-effort. The manual gives the brightness range as
+0 to 100%, including B100. The script uses the meter's current settings.
 
 The connection check does not send M/F measurement commands, toggle echo,
 clear instrument errors, change titles or contrast, recall stored readings,

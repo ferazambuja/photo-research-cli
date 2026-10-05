@@ -51,9 +51,9 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
     errors = []
     stopping = threading.Event()
     # Diagnostic examples from Rev. B, printed pages 117–121. The PR-655
-    # configuration and aperture count are constructed variants for that model.
+    # configuration, stored error and PR-670 text byte are constructed variants.
     reports = {
-        "I": "00000",
+        "I": "00000" if model == "PR-670" else "-8",
         "D110": "00000,67065106",
         "D114": "00000,2.22D",
         "D112": "00000,1,4" if model == "PR-670" else "00000,1,1",
@@ -68,6 +68,7 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
         "D14": "00000,User Sync,120.00 Hertz",
     }
     if model == "PR-670":
+        reports["D117"] = "00000,0,1\N{DEGREE SIGN},0.00"
         reports["D117"] += ("\r\n00000,1,1/2 deg,0.00\r\n00000,2,1/4 deg,0.00"
                             "\r\n00000,3,1/8 deg,0.00")
     setup_commands = ["SN1", "SO2", "SS0", "SU0"]
@@ -108,9 +109,9 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
                         if text == "D111":
                             send(f"00000,{model}\r\n".encode("ascii"))
                         elif text in ("B00", "B100"):
-                            send(f"Backlight set to {int(text[1:])} %\r\n".encode("ascii"))
+                            send(f"Backlight set to {text[1:]} %\r\n".encode("ascii"))
                         elif text in reports:
-                            response = (reports[text] + "\r\n").encode("ascii")
+                            response = (reports[text] + "\r\n").encode("latin-1")
                             if text == "D117":
                                 for line in response.splitlines(keepends=True):
                                     send(line)
@@ -164,11 +165,16 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
             expected += [command, "D601"]
         assert commands == expected + ["Q"]
         assert "67065106" in text and "2.22D" in text
+        if model == "PR-655":
+            assert "stored error -8" in result.stderr
+        else:
+            assert "1\\xb0" in result.stderr
         assert not list(tmp_path.glob("*.jsonl")) and not list(tmp_path.glob("*.csv"))
         return
     assert commands == ["Q", "PHOTO", "D111", "B00", "M5", "B100", "Q"] * 2
     records = [
-        json.loads(line) for line in (tmp_path / "serial-replay.jsonl").read_text().splitlines()
+        json.loads(line)
+        for line in (tmp_path / "serial-replay.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [record["sample_name"] for record in records] == ["Reference", "Sample 002"]
     for record in records:
@@ -180,7 +186,7 @@ def test_direct_script_replays_documented_protocol_through_pyserial(tmp_path, mo
         assert record["instrument_integrated_reading"] == 0.1827
         assert record["integrated_photon_reading"] == 51.47
         assert record["warnings"] == []
-    with (tmp_path / "serial-replay.csv").open(newline="") as file:
+    with (tmp_path / "serial-replay.csv").open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert len(rows) == 2 * len(wavelengths)
     assert result.stderr.count("Command [measure / help / quit]:") == 1

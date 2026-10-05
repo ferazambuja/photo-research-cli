@@ -15,7 +15,7 @@ from serial.tools import list_ports
 from . import __version__
 from .demo import make_demo_record
 from .diagnostics import SupportLog
-from .driver import InstrumentError, PRError, PRMeter, validate_connection
+from .driver import InstrumentError, PRError, PRMeter, UnexpectedReport, validate_connection
 from .logging import CsvSaveError, ReadingLog, export_csv, make_record, save_recovery
 
 _LOG = logging.getLogger(__name__)
@@ -117,7 +117,7 @@ def _ports() -> int:
         _say(f"  {port.device}  {port.description}")
     _say("To find the meter's port, unplug it, run this command again, then reconnect it.")
     _say("Use the port that reappears:")
-    _say("uv run python pr_meter.py record --port YOUR_PORT")
+    _say("uv run python pr_meter.py check --port YOUR_PORT")
     return 0
 
 
@@ -145,6 +145,14 @@ def _check(args: argparse.Namespace) -> int:
             failed = True
             _say(f"{label}: unavailable ({error})")
             return None
+        except UnexpectedReport as error:
+            failed = True
+            _say(f"{label}: unexpected reply ({error})")
+            _say("Reply saved in the support log; continuing with the other checks.")
+            return None
+        if command == "I" and float(result[0][0]) < 0:
+            _say(f"{label}: stored error {result[0][0]} (reported, not cleared).")
+            return result
         _say(f"{label}: " + "; ".join(", ".join(fields[1:]) or "OK" for fields in result))
         return result
 
@@ -173,6 +181,7 @@ def _check(args: argparse.Namespace) -> int:
             _say("Setup tests resend the current values and check the settings after each command.")
             if meter.model == "PR-670":
                 _say("This includes PR-670 smart dark, aperture, speed and sensitivity commands.")
+                _say("The aperture command may move the mechanism even at its current value.")
             try:
                 choice = _ask("Also test setup commands using the current values? [y/N]: ")
             except EOFError:
@@ -309,7 +318,10 @@ def _session(args: argparse.Namespace) -> int:
                     if meter is not None:
                         for warning in meter.warnings:
                             _say(f"Warning: {warning}")
-                    _say("Wait for the meter to finish before typing 'measure' to try again.")
+                    if meter is not None:
+                        _say("Wait for the meter to finish before typing 'measure' to try again.")
+                    else:
+                        _say("Fix the connection, then type 'measure' to try again.")
                     taking_readings = False
                     continue
                 csv_failure = None
@@ -326,7 +338,7 @@ def _session(args: argparse.Namespace) -> int:
                 label = "demo reading" if args.demo else "reading"
                 _say(
                     f"Saved {label} {saved}: '{name}' ({record['model']}, "
-                    f"{len(record['wavelengths_nm'])} spectral samples, 380–780 nm)."
+                    f"{len(record['wavelengths_nm'])} spectral samples, 380-780 nm)."
                 )
                 if csv_failure is not None:
                     _say(f"The reading is saved in JSONL, but the CSV update failed: {csv_failure}")

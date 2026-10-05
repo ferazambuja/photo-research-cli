@@ -45,7 +45,8 @@ integrated header fields are zero placeholders. Real-meter records are unchanged
 
 The Python port follows the MATLAB PR-655/PR-670 workflow with the attribution
 in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Primary protocol reference:
-Photo Research, *PR-655/PR-670 User Manual*, Rev. B, 2009-07-29, printed pages
+Photo Research, *PR-655/PR-670 User Manual*, Rev. B, version date 2009-07-29
+as printed on its title page, printed pages
 102–111 (remote control), 113 (quantity codes), 116 (spectral response),
 118 (model report), and 122 (error codes). The manufacturer provides downloads
 on its [PR-655 product page](https://novanta.com/precision-medicine/product/photo-research-pr-655/#tab-documents-downloads-2).
@@ -65,7 +66,9 @@ the sources compared.
 1. Send `Q` without CR, wait 0.5 seconds, clear input.
 2. Send `PHOTO` without CR; require `REMOTE MODE`.
 3. Send `D111` plus CR; require status zero and `PR-655` or `PR-670`.
-4. For a reading, send `B00` plus CR and check its acknowledgement.
+4. For a reading, send `B00` plus CR and check its acknowledgement, accepting
+   zero-padded percentages. A complete rejected or unfamiliar reply adds a
+   warning and allows acquisition; an incomplete exchange does not.
 5. Send `M5` plus CR; check the five-field header and read the complete native grid.
 6. Attempt `B100` plus CR and check its acknowledgement. Close sends `Q` without
    CR when writes remain usable, then releases the host port.
@@ -80,7 +83,9 @@ command echoes are ignored before the reply. Remote-mode response allows
 `min(10, timeout)` seconds; short replies allow `min(5, timeout)`. The complete
 M5 header and all spectral rows share one `timeout` deadline beginning after
 the paced M5 write. A temporary empty buffer does not mark response completion.
-Replies are bounded to 64 KiB by host policy.
+Replies are bounded to 64 KiB by host policy. Diagnostic text bytes outside
+ASCII are displayed as `\xNN` escapes without guessing the encoding; raw bytes
+are retained in the support log. M5 and numeric parsing remain strict ASCII.
 
 The M5 status must be zero; complete standalone negative statuses are instrument
 errors. All header and spectral numbers must be finite decimal numbers,
@@ -114,7 +119,7 @@ Each line is one ordinary JSON object with `schema_version: 1` and
 | `raw_m5_response` | Received M5 ASCII bytes, including echo/line endings when supplied, encoded as JSON text; this is not a transcript of setup or cleanup |
 | `spectral_quantity`, `spectral_units` | Cautious instrument-reported quantity and unverified units text |
 | `acquisition_settings`, `calibration_status` | Explicitly state settings were not queried/changed and calibration was not checked |
-| `warnings` | Cleanup failures; empty on an exchange with no reported cleanup problem |
+| `warnings` | Unconfirmed backlight control and cleanup failures; empty when neither is reported |
 
 JSON encoding uses finite numbers only, preserves Unicode, and escapes newline
 characters inside strings. Quantity code `0` is used by the manual's M5 example

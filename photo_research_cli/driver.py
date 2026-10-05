@@ -34,6 +34,10 @@ class InstrumentError(PRError):
     """A complete, standalone negative instrument status."""
 
 
+class UnexpectedReport(PRError):
+    """A complete reply whose contents differ from the documented format."""
+
+
 @dataclass(frozen=True)
 class Reading:
     model: str
@@ -175,14 +179,18 @@ class PRMeter:
             self._buffer.extend(data)
         return count
 
-    def _line(self, command: str, deadline: float) -> str:
+    def _line(self, command: str, deadline: float, *, text_report: bool = False) -> str:
         while self.clock.monotonic() < deadline:
             delimiter = next((i for i, byte in enumerate(self._buffer) if byte in (10, 13)), None)
             if delimiter is not None:
                 data = bytes(self._buffer[:delimiter])
                 del self._buffer[: delimiter + 1]
                 try:
-                    line = data.decode("ascii").strip()
+                    # Preserve unfamiliar text bytes visibly without guessing
+                    # an encoding. Numeric parsing and M5 remain strict ASCII.
+                    line = data.decode(
+                        "ascii", errors="backslashreplace" if text_report else "strict"
+                    ).strip()
                 except UnicodeDecodeError as error:
                     raise PRError(
                         f"{command} returned non-ASCII data. Check the selected port."
@@ -200,16 +208,18 @@ class PRMeter:
             f"Timed out waiting for {command}. Wait for the meter to finish before retrying."
         )
 
-    def _reply(self, command: str, deadline: float) -> str:
-        line = self._line(command, deadline)
+    def _reply(self, command: str, deadline: float, *, text_report: bool = False) -> str:
+        line = self._line(command, deadline, text_report=text_report)
         while line == command:
-            line = self._line(command, deadline)
+            line = self._line(command, deadline, text_report=text_report)
         return line
 
-    def _request(self, command: str) -> str:
+    def _request(self, command: str, *, text_report: bool = False) -> str:
         self._reset_input()
         self._write(command)
-        return self._reply(command, self.clock.monotonic() + min(5, self.timeout))
+        return self._reply(
+            command, self.clock.monotonic() + min(5, self.timeout), text_report=text_report
+        )
 
     def query(self, command: str, rows: int = 1) -> list[list[str]]:
         """Read a documented diagnostic report, using known counts for lists."""
@@ -223,38 +233,61 @@ class PRMeter:
             self._write(command)
             deadline = self.clock.monotonic() + min(5, self.timeout)
             result = []
+            lines = []
+            format_error = None
             for _ in range(rows):
-                fields = self._fields(self._reply(command, deadline), command)
-                if len(fields) != _REPORT_FIELDS[command]:
-                    raise PRError(f"Unexpected fields in {command}: {fields!r}.")
-                if command in ("D110", "D114") and not fields[1].strip():
-                    raise PRError(f"{command} returned an empty device information field.")
-                if command == "D112":
-                    counts = self._numbers(fields[1:], "D112 list counts")
-                    if any(value != int(value) or not 0 <= value <= 65536 for value in counts):
-                        raise PRError(f"Invalid accessory/aperture counts: {fields!r}.")
-                if command in ("D601", "D120"):
-                    numbers = self._numbers(fields, command)
-                    if command == "D120":
-                        step = 4 if self.model == "PR-655" else 2
-                        if [numbers[i] for i in (1, 3, 4, 5)] != [400 // step + 1, 380, 780, step]:
-                            raise PRError(
-                                f"Hardware report differs from the supported grid: {fields!r}."
-                            )
-                result.append([field.strip() for field in fields])
+                line = self._reply(command, deadline, text_report=True)
+                lines.append(line)
+                try:
+                    fields = self._fields(line, command)
+                except InstrumentError as error:
+                    if command != "I":
+                        raise
+                    # I reports the stored error; receiving it is a successful query.
+                    _LOG.info("Stored instrument error: %s", error)
+                    fields = [line]
+                except PRError as error:
+                    format_error = error
+                    fields = line.split(",")
+                result.append(fields)
+            # Consume every expected row before allowing another query. A bad
+            # field is recoverable; an incomplete list or extra data is not.
             self._receive()
             if self._buffer.strip():
                 raise PRError(f"{command} returned extra data after its expected report.")
-        except InstrumentError:
+            try:
+                if format_error is not None:
+                    raise format_error
+                for fields in result:
+                    if len(fields) != _REPORT_FIELDS[command]:
+                        raise PRError(f"Unexpected fields in {command}: {fields!r}.")
+                    if command in ("D110", "D114") and not fields[1].strip():
+                        raise PRError(f"{command} returned an empty device information field.")
+                    if command == "D112":
+                        counts = self._numbers(fields[1:], "D112 list counts")
+                        if any(value != int(value) or not 0 <= value <= 65536 for value in counts):
+                            raise PRError(f"Invalid accessory/aperture counts: {fields!r}.")
+                    if command in ("D601", "D120"):
+                        numbers = self._numbers(fields, command)
+                        if command == "D120":
+                            step = 4 if self.model == "PR-655" else 2
+                            grid = [numbers[i] for i in (1, 3, 4, 5)]
+                            if grid != [400 // step + 1, 380, 780, step]:
+                                raise PRError(
+                                    f"Hardware report differs from the supported grid: {fields!r}."
+                                )
+            except PRError as error:
+                raise UnexpectedReport(f"{error} Raw report: {lines!r}.") from error
+        except (InstrumentError, UnexpectedReport):
             self._needs_reconnect = False
-            _LOG.exception("Instrument rejected diagnostic query %s", command)
+            _LOG.exception("Diagnostic query %s returned an error or unfamiliar report", command)
             raise
         except BaseException:
             _LOG.exception("Diagnostic query %s did not complete", command)
             raise
         self._needs_reconnect = False
         _LOG.info("Diagnostic query %s passed (%d rows)", command, rows)
-        return result
+        return [[field.strip() for field in fields] for fields in result]
 
     def test_current_settings(self):
         """Test setup commands with current values and verify the report after each."""
@@ -333,10 +366,18 @@ class PRMeter:
 
     def _backlight(self, percent: int):
         command = f"B{percent:02d}"
-        line = self._request(command)
-        if not re.fullmatch(rf"Backlight set to\s*{percent}\s*%", line, re.IGNORECASE):
-            self._fields(line, command)
-            raise PRError(f"Unexpected backlight response: {line!r}.")
+        line = self._request(command, text_report=True)
+        self._receive()
+        if self._buffer.strip():
+            raise PRError(f"{command} returned extra data after its acknowledgement.")
+        if not re.fullmatch(rf"Backlight set to\s*0*{percent}\s*%", line, re.IGNORECASE):
+            try:
+                self._fields(line, command)
+            except InstrumentError:
+                raise
+            except PRError as error:
+                raise UnexpectedReport(f"Unexpected backlight response: {line!r}.") from error
+            raise UnexpectedReport(f"Unexpected backlight response: {line!r}.")
 
     def measure(self) -> Reading:
         if self._needs_reconnect or self._transport is None:
@@ -346,7 +387,13 @@ class PRMeter:
         started = self.clock.monotonic()
         _LOG.info("Starting M5 spectrum acquisition (%s)", self.model)
         try:
-            self._backlight(0)
+            try:
+                self._backlight(0)
+            except (InstrumentError, UnexpectedReport) as error:
+                _LOG.exception("Backlight-off command was not confirmed")
+                self.warnings.append(
+                    f"Backlight-off command was not confirmed; check the meter display: {error}"
+                )
             self._reset_input()
             self._write("M5")
             deadline = self.clock.monotonic() + self.timeout

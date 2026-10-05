@@ -26,6 +26,7 @@ def test_direct_script_runs_from_another_folder_without_hardware(tmp_path, mode)
     # No project import path or installed project is needed. Only the hardware
     # guard is placed on PYTHONPATH for this separate interpreter.
     environment["PYTHONPATH"] = str(guard)
+    environment["PYTHONIOENCODING"] = "ascii"
     arguments = {
         "help": ["--help"],
         "empty": ["record", "--port", "SOFTWARE_TEST", "--name", "empty"],
@@ -44,15 +45,18 @@ def test_direct_script_runs_from_another_folder_without_hardware(tmp_path, mode)
     if mode == "empty":
         assert "0 complete reading(s)" in result.stderr
         assert (tmp_path / "empty.jsonl").read_bytes() == b""
-        assert (tmp_path / "empty.csv").read_text().startswith("sequence,sample_name,")
+        csv_text = (tmp_path / "empty.csv").read_text(encoding="utf-8")
+        assert csv_text.startswith("sequence,sample_name,")
     elif mode == "demo":
         assert "Saved demo reading 2" in result.stderr
+        assert "380-780 nm" in result.stderr
         assert result.stderr.count("Command [measure / help / quit]:") == 1
         records = [
-            json.loads(line) for line in (tmp_path / "my-demo.jsonl").read_text().splitlines()
+            json.loads(line)
+            for line in (tmp_path / "my-demo.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         assert records[0]["port"] == "DEMO" and records[0]["sample_name"] == "My demo"
         assert records[1]["sample_name"] == "Sample 002"
-        assert len((tmp_path / "my-demo.csv").read_text().splitlines()) == 403
+        assert len((tmp_path / "my-demo.csv").read_text(encoding="utf-8").splitlines()) == 403
     else:
         assert "python pr_meter.py" in result.stdout

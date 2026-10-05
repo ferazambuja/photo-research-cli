@@ -1,9 +1,10 @@
 # Protocol checks
 
 The Python script was compared with the existing MATLAB PR driver and public
-PR-655/PR-670 examples. The serial commands and spectrum format agree with the
-manufacturer manuals. One malformed-number acceptance issue was reproduced
-and fixed. Physical testing remains pending.
+PR-655/PR-670 examples. The acquisition commands and native spectrum format
+follow the manufacturer manuals. Software tests cover malformed numbers,
+zero-padded backlight replies and unfamiliar diagnostic reports. Physical
+testing remains pending.
 
 ## Sources checked
 
@@ -18,10 +19,20 @@ and fixed. Physical testing remains pending.
 
 ## Findings
 
-- **Startup and commands agree.** Q exits remote mode without CR. PHOTO also
-  has no CR. D111, B00, M5 and B100 use CR. Commands are sent one character at a
-  time. The PR-670 Psychtoolbox startup allows 0.5 seconds after Q; its writer
-  uses 50 ms between characters.
+- **Startup follows the PR-670 Psychtoolbox exchange.** This script sends Q
+  and PHOTO without CR, and D111, B00, M5 and B100 with CR. Other implementations
+  use CR for Q/PHOTO, or different line endings; the no-CR form is not universal.
+  Commands are sent one character at a time. The PR-670 Psychtoolbox startup
+  allows 0.5 seconds after Q; its writer uses 50 ms between characters.
+- **Backlight control follows the documented 0–100% range.** Zero-padded
+  acknowledgement text is accepted. Complete rejected or unfamiliar B00 replies
+  add a warning while allowing a spectrum; incomplete replies still stop it.
+  Actual reply wording and display behavior need a meter test.
+- **Diagnostics retain unfamiliar firmware replies.** Complete unexpected
+  reports are logged and later queries continue. Incomplete lists and failed
+  exchanges still require reconnection. A stored error returned by I is reported
+  without clearing it. Non-ASCII text bytes are escaped; numeric parsing remains
+  strict. Both manual editions contain the D601/D602 setup examples.
 - **Native grids agree.** PR-655 returns 101 samples from 380 through 780 nm,
   spaced 4 nm apart. PR-670 returns 201 samples at 2 nm spacing. The script
   checks every wavelength and waits for the complete grid across packet gaps.
@@ -74,8 +85,12 @@ The tests include:
 - Connection failure, command rejection, partial replies, incorrect reported
   grids, unexpected settings changes and support-log write failure while
   saving a complete reading.
+- Unexpected diagnostic formats, commas in text, non-ASCII text bytes,
+  zero-padded and rejected backlight replies, and serial disconnection during
+  spectrum reads. Direct-script tests use an ASCII console encoding. Serial
+  opening options are checked for both POSIX and Windows.
 
-Software check on macOS, version 0.2.0: **136 tests passed; Ruff passed**.
+Software check on macOS, version 0.2.1: **159 tests passed; Ruff passed**.
 
 ```sh
 uv run --locked pytest -q
@@ -86,6 +101,17 @@ The local serial replay is skipped on Windows, where POSIX pseudo-terminals
 are unavailable. It verifies host communication and saving with a simulator.
 Actual firmware replies, USB drivers, instrument timing and optical accuracy
 still need a physical PR-655/PR-670 test.
+
+GitHub Actions runs the software tests and Ruff on Windows with Python 3.11.
+That checks Windows host behavior without a meter; USB-driver installation,
+COM-port discovery and actual console use still need a test on the user's PC.
+
+The first hardware check should retain a support log of remote-mode entry,
+echoes, identity, setup reports and B00/B100 replies. Check long-exposure and
+averaging settings with a suitable `--timeout`. Current-value setup tests cannot
+prove that an aperture does not move. An empty M5 units field is still refused,
+and reopening the port may affect the device's control lines. After an
+interrupted command, power-cycle before retrying if remote-mode entry fails.
 
 The script creates support logs and includes a `check` command. The documented
 queries and optional tests of current setup values, including the PR-670-only

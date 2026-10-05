@@ -23,23 +23,6 @@ It prints their locations. You don't need to name either file.
 uv sync
 ```
 
-## Try the demo
-
-You can try the prompts and file saving without connecting a meter:
-
-```sh
-uv run python pr_meter.py record --demo
-```
-
-Type `measure` once, enter a sample name and optional notes, then press Enter to
-generate a demo reading. After each save, the script asks for the next sample
-name. Press Enter to use the suggested name, or type `quit` to finish. Each
-reading uses the same generated spectrum and is saved to both CSV and JSONL.
-
-The files start with `demo-` followed by the date and time. The data is marked
-as demo data inside both files. Add `--name my-demo` if you prefer
-`my-demo.csv` and `my-demo.jsonl`.
-
 ## Connect the meter
 
 Power on the meter, connect its USB cable, and wait for startup. Close any other
@@ -122,9 +105,9 @@ or leave out `--name` to use the date and time.
 
 ## Send a support log
 
-The script automatically creates a dated `support-...log` file for each run,
-including demo sessions. It prints the location at the start and end. Send
-this file to Fernando after a successful test or if something goes wrong.
+The script automatically creates a dated `support-...log` file for each run.
+It prints the location at the start and end. Send this file to Fernando after
+a successful test or if something goes wrong.
 
 The log includes the script and Python versions, operating system, port details,
 commands, original device replies, timing, prompts and errors. It also contains
@@ -162,5 +145,22 @@ Psychtoolbox, PsychoPy and ISET examples. Tests include the script communicating
 through pySerial with a local serial emulator. Testing with a physical meter is
 still pending. See the [review](docs/validation.md) and
 [technical reference](docs/protocol.md) for details.
+
+## Test the prompts without a meter
+
+This optional demo tests the prompts and file saving with generated sample data:
+
+```sh
+uv run python pr_meter.py record --demo
+```
+
+Type `measure` once, enter a sample name and optional notes, then press Enter to
+generate a demo reading. After each save, the script asks for the next sample
+name. Press Enter to use the suggested name, or type `quit` to finish. Each
+reading uses the same generated spectrum and is saved to both CSV and JSONL.
+
+The files start with `demo-` followed by the date and time. The data is marked
+as demo data inside both files. Add `--name my-demo` if you prefer
+`my-demo.csv` and `my-demo.jsonl`.
 
 MIT licensed. See [LICENSE](LICENSE) and [source attribution](THIRD_PARTY_NOTICES.md).

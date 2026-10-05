@@ -1,4 +1,4 @@
-# Protocol review, 2026-10-03
+# Protocol checks
 
 The Python script was compared with the existing MATLAB PR driver and public
 PR-655/PR-670 examples. The serial commands and spectrum format agree with the
@@ -63,14 +63,19 @@ The tests include:
   after cleanup failure, and JSONL/CSV saving and recovery.
 - Repeated guided readings, cancellation, optional filenames and offline CSV
   export.
-- Two subprocess runs of the actual Python script through real pySerial and
-  a local POSIX pseudo-terminal, one for each model. The separate emulator
-  checks the command sequence, echoes commands, returns the manual's header
-  and backlight wording, and fragments constructed spectra with 120 ms gaps.
-  Each run takes two readings using separate serial connections, then verifies
-  both saved files. The subprocess can open only the test's virtual terminal.
+- Subprocess runs of the actual script through pySerial and a POSIX
+  pseudo-terminal, covering recording and device checks for both models.
+  The separate emulator checks commands, echoes, documented headers and
+  backlight wording, and constructed spectra fragmented with 120 ms gaps.
+  Recording runs take two readings on separate connections and verify both
+  measurement files. Device checks include setup commands and fragmented
+  aperture reports. Both modes verify support logs. Each subprocess can open
+  only the test's virtual terminal.
+- Connection failure, command rejection, partial replies, incorrect reported
+  grids, unexpected settings changes and support-log write failure while
+  saving a complete reading.
 
-Review completion check on macOS, 2026-10-03: **111 tests passed; Ruff passed**.
+Software check on macOS, version 0.2.0: **136 tests passed; Ruff passed**.
 
 ```sh
 uv run --locked pytest -q
@@ -82,15 +87,6 @@ are unavailable. It verifies host communication and saving with a simulator.
 Actual firmware replies, USB drivers, instrument timing and optical accuracy
 still need a physical PR-655/PR-670 test.
 
-## Support logs and command checks, 2026-10-04
-
-Version 0.2.0 adds automatic support logs and a `check` command. The documented
+The script creates support logs and includes a `check` command. The documented
 queries and optional tests of current setup values, including the PR-670-only
 SD/SF/SG/SH commands, are listed in [command coverage](commands.md).
-
-The pySerial replay now covers both recording and device checks for each model,
-including the optional setup command tests and fragmented aperture lists.
-Additional tests cover connection failure, command rejection, partial replies,
-incorrect reported grids, unexpected settings changes, interruption and
-support-log write failure while saving a complete reading. Final software check
-on macOS: **136 tests passed; Ruff passed**. No physical meter was used.

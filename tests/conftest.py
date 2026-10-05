@@ -104,6 +104,7 @@ class FakePort:
         elif command == "I":
             response = b"00000\r\n"
         elif command == "D110":
+            # This serial number is a published manufacturer-manual example.
             response = b"00000,67065106\r\n"
         elif command == "D114":
             response = b"00000,2.22D\r\n"
